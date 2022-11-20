@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import os
 import typing
 from argparse import Namespace
 import numpy as np
@@ -9,9 +10,6 @@ import pytorch_lightning as pl
 import pandas as pd
 from IPython.display import display, Markdown, Latex, HTML
 from transformers import BertTokenizer, BertModel, BatchEncoding
-from transformers import AdamW
-from transformers import get_scheduler
-from tqdm.auto import tqdm
 from pprint import pprint
 from config import cfg
 from model_bert import TSCModel_PL
@@ -26,13 +24,17 @@ def load_data() -> typing.Tuple[pd.DataFrame, pd.DataFrame]:
     data_pth = "Data/"
     train_pth = data_pth + "train.csv"
     test_pth = data_pth + "test.csv"
+    test_labels_pth = data_pth + "test_labels.csv"
     train_val = pd.read_csv(train_pth)
     test = pd.read_csv(test_pth)
-    # print(test)
+
+    test_labels = pd.read_csv(test_labels_pth)
+    test_labels = test_labels[test_labels.drop(columns=["id"]).sum(axis=1) >= 0]
+    test = test.merge(test_labels, on="id")
     return train_val, test
 
 
-def train_val_split(
+def random_split(
     dataset: pd.DataFrame, train_frac: float
 ) -> typing.Tuple[pd.DataFrame, pd.DataFrame]:
     """split dataset according into train and validation set, according to train_frac
@@ -54,7 +56,7 @@ def train_val_split(
 
 
 def make_tokenized_batches(
-    dataset: pd.DataFrame, tokenizer, batch_size: int, device
+    dataset: pd.DataFrame, tokenizer, batch_size: int, tag: str
 ) -> typing.List[BatchEncoding]:
     """divide the dataset into batches of size batch_size and
     tokenize the batches with the BertTokenizer
@@ -68,14 +70,9 @@ def make_tokenized_batches(
         typing.List[BatchEncoding]: List of dictionarys, one dictionary per batch
     """
 
-    label_tags = [
-        "toxic",
-        "severe_toxic",
-        "obscene",
-        "threat",
-        "insult",
-        "identity_hate",
-    ]
+    if os.path.exists(f"Data/{tag}_batches_bs{batch_size}.pt"):
+        print("loading batches from disk")
+        return torch.load(f"Data/{tag}_batches_bs{batch_size}.pt")
     batches = []
     for b in range(0, len(dataset), batch_size):
         ds_batch = dataset.iloc[b : b + batch_size]
@@ -85,9 +82,10 @@ def make_tokenized_batches(
         token_dict = tokenizer(
             sentences, return_tensors="pt", padding="longest", truncation=True
         )
-        labels = ds_batch[label_tags].to_numpy(dtype=int)
+        labels = ds_batch[cfg.label_tags].to_numpy(dtype=int)
         token_dict["labels"] = torch.tensor(labels, dtype=torch.float)
         batches.append(token_dict)
+    torch.save(batches, f"Data/{tag}_batches_bs{batch_size}.pt")
     return batches
 
 
@@ -97,11 +95,11 @@ class DatasetAdapter(Dataset):
 
     def __getitem__(
         self, index
-    ) -> typing.Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> typing.Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return (
             self.batch_encodings[index]["input_ids"],
             self.batch_encodings[index]["token_type_ids"],
-            self.batch_encodings[index]["attention_mask"],
+            # self.batch_encodings[index]["attention_mask"],
             self.batch_encodings[index]["labels"],
         )
 
@@ -111,24 +109,19 @@ class DatasetAdapter(Dataset):
 
 if __name__ == "__main__":
     cfg = Namespace(**cfg)
-    device = (
-        torch.device("cuda")
-        if False and torch.cuda.is_available()
-        else torch.device("cpu")
-    )
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(device)
-    cfg.device = device
 
-    train_set, test_set = load_data()
-    train, val = train_val_split(train_set, train_frac=0.8)
+    train_val_set, test_set = load_data()
+    # train_set, val_set = random_split(train_val_set, train_frac=0.9)
     tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
     train_batches = make_tokenized_batches(
-        train.iloc[:512], tokenizer, cfg.batchsize, device=device
+        train_val_set, tokenizer, cfg.batchsize, tag="train"
     )
-    val_batches = make_tokenized_batches(
-        val.iloc[:512], tokenizer, cfg.batchsize, device=device
-    )
-    print({k: v.shape for (k, v) in train_batches[0].items()})
+    # val_batches = make_tokenized_batches(val_set, tokenizer, cfg.batchsize, tag="val")
+    val_batches = make_tokenized_batches(test_set, tokenizer, cfg.batchsize, tag="test")
+    # train_batches = train_batches[:200]
+    # val_batches = val_batches[:100]
 
     train_loader = DataLoader(DatasetAdapter(train_batches), num_workers=12)
     val_loader = DataLoader(DatasetAdapter(val_batches), num_workers=12)
@@ -140,5 +133,5 @@ if __name__ == "__main__":
     pretrained_model = BertModel.from_pretrained("bert-base-cased")
     pretrained_state_dict = pretrained_model.state_dict()
     model = TSCModel_PL(cfg, pretrained_state_dict)
-    trainer = pl.Trainer(gpus=0)
+    trainer = pl.Trainer(gpus=1, max_epochs=num_epochs)
     trainer.fit(model, train_loader, val_loader)

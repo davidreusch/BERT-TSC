@@ -1,7 +1,20 @@
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
-from transformers import AdamW, get_scheduler
+from torchmetrics.classification import (
+    MultilabelAccuracy,
+    MultilabelROC,
+    MultilabelAUROC,
+    MultilabelPrecision,
+    MultilabelRecall,
+    MultilabelConfusionMatrix,
+)
+from torchmetrics import MeanMetric, MetricCollection
+from transformers import get_scheduler
+from torch.optim import AdamW
+import matplotlib.pyplot as plt
+import utils
+import seaborn
 
 
 class BertSelfAttention(nn.Module):
@@ -142,20 +155,22 @@ class BertEmbeddings(nn.Module):
         self.register_buffer(
             "position_ids", torch.arange(cfg.max_seq_len).expand((1, -1))
         )
-        self.device = cfg.device
+        # self.device = cfg.device
 
     # def forward(self, input_ids, token_type_ids):
-    def forward(self, input_ids, token_type_ids):
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        token_type_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+    ):
         batchsize, seq_len = input_ids.shape
-        position_ids = torch.stack(
-            [torch.arange(0, seq_len, dtype=torch.long, device=self.device)] * batchsize
-        )
+        # position_ids = torch.stack(
+        # [torch.arange(0, seq_len, dtype=torch.long, device=self.device)] * batchsize
+        # )
         input_embeds = self.word_embeddings(input_ids)
         position_embeds = self.position_embeddings(position_ids)
         token_type_embeds = self.token_type_embeddings(token_type_ids)
-        # print(f"{input_embeds.shape=}")
-        # print(f"{token_type_embeds.shape=}")
-        # print(f"{position_embeds.shape=}")
         embeds = input_embeds + position_embeds + token_type_embeds
         embeds = self.LayerNorm(input_embeds)
         embeds = self.dropout(embeds)
@@ -175,8 +190,14 @@ class MyBertModel(nn.Module):
         self.encoder = BertEncoder(cfg)
         self.pooler = BertPooler(cfg)
 
-    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor):
-        embeds = self.embeddings(input_ids, token_type_ids)
+    # def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor):
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        token_type_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+    ):
+        embeds = self.embeddings(input_ids, token_type_ids, position_ids)
         encoder_output = self.encoder(embeds)
         return encoder_output
 
@@ -211,8 +232,13 @@ class ToxicSentimentClassificationModel(nn.Module):
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.cfg = cfg
 
-    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor, **kwargs):
-        backbone_output = self.backbone(input_ids, token_type_ids)
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        token_type_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+    ):
+        backbone_output = self.backbone(input_ids, token_type_ids, position_ids)
         return self.output_layer(backbone_output)
 
 
@@ -222,36 +248,187 @@ class TSCModel_PL(pl.LightningModule):
         self.backbone = MyBertModel(cfg)
         self.backbone.load_state_dict(state_dict)
         self.output_layer = OutputLayer(cfg)
-        self.loss_fn = nn.BCEWithLogitsLoss()
+        positive_weights = 27 * torch.ones(cfg.num_target_categories)
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=positive_weights)
         self.cfg = cfg
+        self.automatic_optimization = False
+        self.opt_step_interval = 2
+        self._train_outputs = []
+        self._val_outputs = []
 
-    def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor, **kwargs):
-        backbone_output = self.backbone(input_ids, token_type_ids)
+        metrics = MetricCollection(
+            [
+                MultilabelAccuracy(num_labels=6, average=None),
+                MultilabelAUROC(num_labels=6, average=None),
+                MultilabelPrecision(num_labels=6, average=None),
+                MultilabelRecall(num_labels=6, average=None),
+            ]
+        )
+        self.train_metrics = metrics.clone(prefix="train_")
+        self.val_metrics = metrics.clone(prefix="val_")
+        self.train_roc = MultilabelROC(num_labels=6)
+        self.val_roc = MultilabelROC(num_labels=6)
+        self.train_confusion_matrix = MultilabelConfusionMatrix(num_labels=6)
+        self.val_confusion_matrix = MultilabelConfusionMatrix(num_labels=6)
+
+        self.mean_train_loss = MeanMetric()
+        self.mean_val_loss = MeanMetric()
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        token_type_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+        **kwargs,
+    ):
+        backbone_output = self.backbone(input_ids, token_type_ids, position_ids)
         return self.output_layer(backbone_output)
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=5e-5)
-        lr_scheduler = get_scheduler(
-            "linear",
-            optimizer=optimizer,
-            num_warmup_steps=0,
-            num_training_steps=self.cfg.num_training_steps,
-        )
-        return [optimizer], [lr_scheduler]
+        # lr_scheduler = get_scheduler(
+        # "linear",
+        # optimizer=optimizer,
+        # num_warmup_steps=0,
+        # num_training_steps=self.cfg.num_training_steps,
+        # )
+        return optimizer
 
     def training_step(self, batch, batch_idx):
-        input_ids, token_type_ids, attention_mask, labels = batch
-        outputs = self(input_ids[0], token_type_ids[0])
-        loss = self.loss_fn(outputs, labels[0])
-        self.log("train_loss", loss)
-        return loss
+        opt = self.optimizers()
+        input_ids, token_type_ids, labels = batch
+        seq_len = input_ids.shape[2]
+        position_ids = torch.stack(
+            [torch.arange(0, seq_len, dtype=torch.long, device=self.device)]
+            * self.cfg.batchsize
+        )
+        logits = self(input_ids[0], token_type_ids[0], position_ids=position_ids)
+        loss_val = self.loss_fn(logits, labels[0])
+        loss_val.backward()
+
+        # accumulate gradients of multiple batches
+        if (batch_idx + 1) % self.cfg.opt_step_interval == 0:
+            opt.step()
+            opt.zero_grad()
+
+        self.mean_train_loss.update(loss_val.item())
+        self.train_metrics.update(logits, labels[0].int())
+        self.train_confusion_matrix.update(logits, labels[0].int())
+        self.log(
+            "train_loss",
+            self.mean_train_loss.compute(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        self.log(
+            "train_accuracy",
+            self.train_metrics.compute()["train_MultilabelAccuracy"].mean(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+
+        # if (batch_idx + 1) % 50 == 0:
+        # train_dict = self.train_metrics.compute()
+        # train_dict_labels = {
+        # f"{k}_{label}": v[i]
+        # for k, v in train_dict.items()
+        # for i, label in enumerate(self.cfg.label_tags)
+        # if k not in ["train_MultilabelConfusionMatrix", "train_MultilabelROC"]
+        # }
+
+        # self.log_dict(train_dict_labels, on_step=True, on_epoch=True, prog_bar=True)
+        # pass
+
+        self._train_outputs.append((logits, labels[0].int()))
+
+    def training_epoch_end(self, outputs):
+
+        train_dict = self.train_metrics.compute()
+        auroc = train_dict["train_MultilabelAUROC"]
+        cm = self.train_confusion_matrix.compute()
+
+        logits = [o[0] for o in self._train_outputs]
+        labels = [o[1] for o in self._train_outputs]
+        logits = torch.cat(logits, dim=0)
+        labels = torch.cat(labels, dim=0)
+        fpr, tpr, thresholds = self.train_roc(logits, labels)
+
+        tensorboard = self.logger.experiment
+        utils.log_roc_curve(
+            fpr,
+            tpr,
+            tensorboard,
+            self.current_epoch,
+            tag="train",
+            auroc=auroc,
+        )
+        utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag="train")
+        self.train_metrics.reset()
+        self.mean_train_loss.reset()
+        self.train_roc.reset()
+        self.train_confusion_matrix.reset()
+        self._train_outputs = []
 
     def validation_step(self, batch, batch_idx):
-        input_ids, token_type_ids, attention_mask, labels = batch
-        outputs = self(input_ids[0], token_type_ids[0])
-        loss = self.loss_fn(outputs, labels[0])
-        predictions = (outputs > 0.5).type(torch.float)
-        accuracy = torch.mean(torch.abs(predictions - labels))
-        self.log("val_loss", loss, prog_bar=True)
-        self.log("val_accuracy", accuracy, prog_bar=True)
-        return loss
+        input_ids, token_type_ids, labels = batch
+        seq_len = input_ids.shape[2]
+        position_ids = torch.stack(
+            [torch.arange(0, seq_len, dtype=torch.long, device=self.device)]
+            * self.cfg.batchsize
+        )
+        logits = self(input_ids[0], token_type_ids[0], position_ids)
+        loss_val = self.loss_fn(logits, labels[0])
+
+        self.mean_val_loss.update(loss_val.item())
+        self.val_metrics.update(logits, labels[0].int())
+        self.val_confusion_matrix.update(logits, labels[0].int())
+        self.log(
+            "val_loss",
+            self.mean_val_loss.compute(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        self.log(
+            "val_accuracy",
+            self.val_metrics.compute()["val_MultilabelAccuracy"].mean(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+
+        if (batch_idx + 1) % 5 == 0:
+            pass
+
+        self._val_outputs.append((logits, labels[0].int()))
+        return logits, labels[0].int()
+
+    def validation_epoch_end(self, outputs):
+
+        val_dict = self.val_metrics.compute()
+        auroc = val_dict["val_MultilabelAUROC"]
+        cm = self.val_confusion_matrix.compute()
+
+        logits = [o[0] for o in self._val_outputs]
+        labels = [o[1] for o in self._val_outputs]
+        logits = torch.cat(logits, dim=0)
+        labels = torch.cat(labels, dim=0)
+        fpr, tpr, thresholds = self.val_roc(logits, labels)
+        tensorboard = self.logger.experiment
+        utils.log_roc_curve(
+            fpr,
+            tpr,
+            tensorboard,
+            self.current_epoch,
+            tag="val",
+            auroc=auroc,
+        )
+        utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag="val")
+        utils.log_metrics_table(val_dict, tensorboard, self.current_epoch, tag="val")
+        self.val_metrics.reset()
+        self.mean_val_loss.reset()
+        self.val_roc.reset()
+        self.val_confusion_matrix.reset()
+        self._val_outputs = []

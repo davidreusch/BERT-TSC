@@ -13,7 +13,7 @@ from transformers import BertTokenizer, BertModel, BatchEncoding
 from transformers import get_scheduler
 from tqdm.auto import tqdm
 from pprint import pprint
-from config import cfg, label_tags
+from config import cfg
 from model_bert import ToxicSentimentClassificationModel
 from sklearn.metrics import roc_auc_score, RocCurveDisplay, ConfusionMatrixDisplay
 
@@ -71,7 +71,7 @@ def make_tokenized_batches(
 
     if os.path.exists(f"Data/{tag}_batches_bs{batch_size}.pt"):
         print("loading batches from disk")
-        return torch.load(f"Data/{tag}_batches.pt")
+        return torch.load(f"Data/{tag}_batches_bs{batch_size}.pt")
     batches = []
     for b in range(0, len(dataset), batch_size):
         ds_batch = dataset.iloc[b : b + batch_size]
@@ -81,7 +81,7 @@ def make_tokenized_batches(
         token_dict = tokenizer(
             sentences, return_tensors="pt", padding="longest", truncation=True
         )
-        labels = ds_batch[label_tags].to_numpy(dtype=int)
+        labels = ds_batch[cfg.label_tags].to_numpy(dtype=int)
         token_dict["labels"] = torch.tensor(labels, dtype=torch.float)
         batches.append(token_dict)
     torch.save(batches, f"Data/{tag}_batches_bs{batch_size}.pt")
@@ -114,12 +114,12 @@ def get_roc(labels: np.ndarray, pred_probs: np.ndarray, tag=""):
             ConfusionMatrixDisplay.from_predictions(
                 labels[:, label].astype(int), (pred_probs[:, label] > 0.5)
             )
-            plt.savefig(f"plots/confusion_matrix_{tag}_{label_tags[label]}.png")
+            plt.savefig(f"plots/confusion_matrix_{tag}_{cfg.label_tags[label]}.png")
             plt.cla()
             RocCurveDisplay.from_predictions(
                 labels[:, label].astype(int), pred_probs[:, label]
             )
-            plt.savefig(f"plots/roc_curve_{tag}_{label_tags[label]}.png")
+            plt.savefig(f"plots/roc_curve_{tag}_{cfg.label_tags[label]}.png")
             plt.cla()
             plt.close()
 
@@ -130,7 +130,7 @@ def get_roc(labels: np.ndarray, pred_probs: np.ndarray, tag=""):
 
 def analyse_data(dataset: pd.DataFrame):
 
-    labels = dataset[label_tags].to_numpy(dtype=float)
+    labels = dataset[cfg.label_tags].to_numpy(dtype=float)
     print(labels)
     print(labels.shape)
     a = labels.sum(axis=-1) / 6
@@ -205,7 +205,12 @@ def train(
             optimizer.zero_grad()
             input_ids = batch["input_ids"].to(device)
             token_type_ids = batch["token_type_ids"].to(device)
-            logits = model(input_ids, token_type_ids)
+            seq_len = input_ids.shape[1]
+            position_ids = torch.stack(
+                [torch.arange(0, seq_len, dtype=torch.long, device=cfg.device)]
+                * cfg.batchsize
+            )
+            logits = model(input_ids, token_type_ids, position_ids)
             labels = batch["labels"].to(device)
             loss_val = loss_fn(logits, labels)
 
