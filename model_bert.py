@@ -165,9 +165,6 @@ class BertEmbeddings(nn.Module):
         position_ids: torch.Tensor,
     ):
         batchsize, seq_len = input_ids.shape
-        # position_ids = torch.stack(
-        # [torch.arange(0, seq_len, dtype=torch.long, device=self.device)] * batchsize
-        # )
         input_embeds = self.word_embeddings(input_ids)
         position_embeds = self.position_embeddings(position_ids)
         token_type_embeds = self.token_type_embeddings(token_type_ids)
@@ -298,9 +295,9 @@ class TSCModel_PL(pl.LightningModule):
         opt = self.optimizers()
         input_ids, token_type_ids, labels = batch
         seq_len = input_ids.shape[2]
+        batchsize = input_ids.shape[1]
         position_ids = torch.stack(
-            [torch.arange(0, seq_len, dtype=torch.long, device=self.device)]
-            * self.cfg.batchsize
+            [torch.arange(0, seq_len, dtype=torch.long, device=self.device)] * batchsize
         )
         logits = self(input_ids[0], token_type_ids[0], position_ids=position_ids)
         loss_val = self.loss_fn(logits, labels[0])
@@ -365,6 +362,9 @@ class TSCModel_PL(pl.LightningModule):
             auroc=auroc,
         )
         utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag="train")
+        utils.log_metrics_table(
+            train_dict, tensorboard, self.current_epoch, tag="train"
+        )
         self.train_metrics.reset()
         self.mean_train_loss.reset()
         self.train_roc.reset()

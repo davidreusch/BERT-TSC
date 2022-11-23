@@ -256,10 +256,18 @@ if __name__ == "__main__":
         train_set, tokenizer, cfg.batchsize, tag="train"
     )
     val_batches = make_tokenized_batches(val_set, tokenizer, cfg.batchsize, tag="val")
+    train_batches = train_batches[:100]
+    val_batches = val_batches[:100]
+    # print(train_batches[0])
 
     pretrained_model = BertModel.from_pretrained("bert-base-cased")
     pretrained_state_dict = pretrained_model.state_dict()
     model = ToxicSentimentClassificationModel(cfg, pretrained_state_dict)
     model.to(device)
+    print(model)
+
+    import sys
+
+    sys.exit(1)
 
     train(model, train_batches, val_batches, device, cfg, "log.txt")
