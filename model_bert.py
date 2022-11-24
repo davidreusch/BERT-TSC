@@ -10,11 +10,8 @@ from torchmetrics.classification import (
     MultilabelConfusionMatrix,
 )
 from torchmetrics import MeanMetric, MetricCollection
-from transformers import get_scheduler
 from torch.optim import AdamW
-import matplotlib.pyplot as plt
 import utils
-import seaborn
 
 
 class BertSelfAttention(nn.Module):
@@ -80,7 +77,6 @@ class BertSelfOutput(nn.Module):
 class BertAttention(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
-        # self.attention = BertSelfAttention(cfg)
         self.self = BertSelfAttention(cfg)
         self.output = BertSelfOutput(cfg)
 
@@ -155,9 +151,7 @@ class BertEmbeddings(nn.Module):
         self.register_buffer(
             "position_ids", torch.arange(cfg.max_seq_len).expand((1, -1))
         )
-        # self.device = cfg.device
 
-    # def forward(self, input_ids, token_type_ids):
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -187,7 +181,6 @@ class MyBertModel(nn.Module):
         self.encoder = BertEncoder(cfg)
         self.pooler = BertPooler(cfg)
 
-    # def forward(self, input_ids: torch.Tensor, token_type_ids: torch.Tensor):
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -205,7 +198,6 @@ class OutputLayer(nn.Module):
         self.dense1 = nn.Linear(cfg.d_model, cfg.d_model // 2)
         self.act_fn = nn.GELU()
         self.dense2 = nn.Linear(cfg.d_model // 2, cfg.num_target_categories)
-        # self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(cfg.p_dropout)
 
     def forward(self, encoder_output: torch.Tensor):
@@ -216,7 +208,6 @@ class OutputLayer(nn.Module):
         x = self.act_fn(x)
         x = self.dropout(x)
         x = self.dense2(x)
-        # x = self.softmax(x)
         return x
 
 
@@ -245,11 +236,11 @@ class TSCModel_PL(pl.LightningModule):
         self.backbone = MyBertModel(cfg)
         self.backbone.load_state_dict(state_dict)
         self.output_layer = OutputLayer(cfg)
+        # ratio of positive to negative samples is 1/27, so add this as loss weights (should be adapted for each class individually)
         positive_weights = 27 * torch.ones(cfg.num_target_categories)
         self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=positive_weights)
         self.cfg = cfg
         self.automatic_optimization = False
-        self.opt_step_interval = 2
         self._train_outputs = []
         self._val_outputs = []
 
@@ -283,12 +274,6 @@ class TSCModel_PL(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=5e-5)
-        # lr_scheduler = get_scheduler(
-        # "linear",
-        # optimizer=optimizer,
-        # num_warmup_steps=0,
-        # num_training_steps=self.cfg.num_training_steps,
-        # )
         return optimizer
 
     def training_step(self, batch, batch_idx):
@@ -325,18 +310,6 @@ class TSCModel_PL(pl.LightningModule):
             on_epoch=True,
             prog_bar=True,
         )
-
-        # if (batch_idx + 1) % 50 == 0:
-        # train_dict = self.train_metrics.compute()
-        # train_dict_labels = {
-        # f"{k}_{label}": v[i]
-        # for k, v in train_dict.items()
-        # for i, label in enumerate(self.cfg.label_tags)
-        # if k not in ["train_MultilabelConfusionMatrix", "train_MultilabelROC"]
-        # }
-
-        # self.log_dict(train_dict_labels, on_step=True, on_epoch=True, prog_bar=True)
-        # pass
 
         self._train_outputs.append((logits, labels[0].int()))
 
