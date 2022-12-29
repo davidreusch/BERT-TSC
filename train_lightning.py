@@ -260,6 +260,7 @@ def main(recompute, data_amount, num_gpus):
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(device)
+    num_gpus = int(torch.cuda.is_available()) if num_gpus == 0 else num_gpus
 
     # get bert tokenizer
     bert_tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
