@@ -249,9 +249,14 @@ class LazyDatasetAdapter(Dataset):
 @click.option(
     "--data-amount",
     default=0,
-    help="determines wether to recompute dataset or load it from disk",
+    help="number of batches to load, 0 means all batches",
 )
-def main(recompute, data_amount):
+@click.option(
+    "--num-gpus",
+    default=0,
+    help="how many gpus to use",
+)
+def main(recompute, data_amount, num_gpus):
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(device)
@@ -279,7 +284,7 @@ def main(recompute, data_amount):
     model = TSCModel_PL(cfg, pretrained_state_dict, inverse_class_probabilities)
 
     # train the model
-    trainer = pl.Trainer(gpus=0, max_epochs=cfg.num_epochs)
+    trainer = pl.Trainer(gpus=num_gpus, max_epochs=cfg.num_epochs)
     trainer.fit(model, train_loader, test_loader)
 
 
