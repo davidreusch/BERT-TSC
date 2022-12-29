@@ -2,7 +2,7 @@
 Data/
 lightning_logs/
 plots/
-
+.vscode
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

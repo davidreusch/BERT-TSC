@@ -1,14 +1,15 @@
-from config import cfg
 from argparse import Namespace
 
-cfg = Namespace(**cfg)
+from config import config_dict
+
+config_dict = Namespace(**config_dict)
 import matplotlib.pyplot as plt
-import seaborn as sn
 import pandas as pd
+import seaborn as sn
 
 
 def log_roc_curve(fpr, tpr, tensorboard, epoch, tag, auroc):
-    for i, label in enumerate(cfg.label_tags):
+    for i, label in enumerate(config_dict.label_tags):
         fig = plt.figure()
         auroc_i = round(auroc[i].item(), 3)
         plt.plot(
@@ -27,7 +28,7 @@ def log_roc_curve(fpr, tpr, tensorboard, epoch, tag, auroc):
 
 
 def log_confusion_matrix(cm, tensorboard, epoch, tag):
-    for i, label in enumerate(cfg.label_tags):
+    for i, label in enumerate(config_dict.label_tags):
         fig = plt.figure()
         df_cm = pd.DataFrame(cm[i].cpu().int().numpy(), range(2), range(2), dtype=int)
         sn.set(font_scale=1.4)  # for label size
@@ -44,7 +45,7 @@ def log_confusion_matrix(cm, tensorboard, epoch, tag):
 def log_metrics_table(metrics_dict, tensorboard, epoch, tag):
 
     metrics_dict = {k: v.cpu().numpy() for k, v in metrics_dict.items()}
-    df = pd.DataFrame.from_dict(metrics_dict, orient="index", columns=cfg.label_tags)
+    df = pd.DataFrame.from_dict(metrics_dict, orient="index", columns=config_dict.label_tags)
     fig = plt.figure()
     sn.set(font_scale=1.0)  # for label size
     sn.heatmap(df, annot=True, annot_kws={"size": 12}, fmt=".3f")

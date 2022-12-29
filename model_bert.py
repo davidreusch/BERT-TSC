@@ -1,16 +1,17 @@
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import pytorch_lightning as pl
+from torch.optim import AdamW
+from torchmetrics import MeanMetric, MetricCollection
 from torchmetrics.classification import (
     MultilabelAccuracy,
-    MultilabelROC,
     MultilabelAUROC,
+    MultilabelConfusionMatrix,
     MultilabelPrecision,
     MultilabelRecall,
-    MultilabelConfusionMatrix,
+    MultilabelROC,
 )
-from torchmetrics import MeanMetric, MetricCollection
-from torch.optim import AdamW
+
 import utils
 
 
@@ -28,17 +29,11 @@ class BertSelfAttention(nn.Module):
         batchsize, seq_len, d_model = seq.shape
         assert d_model % self.num_attention_heads == 0
         d_v = d_model // self.num_attention_heads
-        querys_proj = self.query(seq).view(
-            batchsize, seq_len, self.num_attention_heads, d_v
-        )
+        querys_proj = self.query(seq).view(batchsize, seq_len, self.num_attention_heads, d_v)
         querys_proj = querys_proj.transpose(1, 2)
-        keys_proj = self.key(seq).view(
-            batchsize, seq_len, self.num_attention_heads, d_v
-        )
+        keys_proj = self.key(seq).view(batchsize, seq_len, self.num_attention_heads, d_v)
         keys_proj = keys_proj.transpose(1, 2)
-        values_proj = self.value(seq).view(
-            batchsize, seq_len, self.num_attention_heads, d_v
-        )
+        values_proj = self.value(seq).view(batchsize, seq_len, self.num_attention_heads, d_v)
         values_proj = values_proj.transpose(1, 2)
 
         #   (batchsize, num_attention_heads, seq_len, d_v) x (batchsize, num_attention_heads, d_v, seq_len)
@@ -60,18 +55,13 @@ class BertSelfOutput(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
         self.dense = nn.Linear(cfg.d_model, cfg.d_model)
-        self.LayerNorm = nn.LayerNorm(
-            (cfg.d_model,), eps=1e-12, elementwise_affine=True
-        )
+        self.LayerNorm = nn.LayerNorm((cfg.d_model,), eps=1e-12, elementwise_affine=True)
         self.dropout = nn.Dropout(cfg.p_dropout)
 
     def forward(self, attention_output):
         # attention_output.shape = (batchsize, seq_len, d_model)
         # in which order to apply these things? see below
-        return (
-            self.dropout(self.LayerNorm(self.dense(attention_output)))
-            + attention_output
-        )
+        return self.dropout(self.LayerNorm(self.dense(attention_output))) + attention_output
 
 
 class BertAttention(nn.Module):
@@ -99,9 +89,7 @@ class BertOutput(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
         self.dense = nn.Linear(cfg.d_model * 4, cfg.d_model)
-        self.LayerNorm = nn.LayerNorm(
-            (cfg.d_model,), eps=1e-12, elementwise_affine=True
-        )
+        self.LayerNorm = nn.LayerNorm((cfg.d_model,), eps=1e-12, elementwise_affine=True)
         self.dropout = nn.Dropout(cfg.p_dropout)
 
     def forward(self, seq):
@@ -144,13 +132,9 @@ class BertEmbeddings(nn.Module):
         self.token_type_embeddings = nn.Embedding(
             2, cfg.d_model
         )  # only beginning of sentence token and other tokens
-        self.LayerNorm = nn.LayerNorm(
-            (cfg.d_model,), eps=1e-12, elementwise_affine=True
-        )
+        self.LayerNorm = nn.LayerNorm((cfg.d_model,), eps=1e-12, elementwise_affine=True)
         self.dropout = nn.Dropout(cfg.p_dropout)
-        self.register_buffer(
-            "position_ids", torch.arange(cfg.max_seq_len).expand((1, -1))
-        )
+        self.register_buffer("position_ids", torch.arange(cfg.max_seq_len).expand((1, -1)))
 
     def forward(
         self,
@@ -158,7 +142,7 @@ class BertEmbeddings(nn.Module):
         token_type_ids: torch.Tensor,
         position_ids: torch.Tensor,
     ):
-        batchsize, seq_len = input_ids.shape
+        # batchsize, seq_len = input_ids.shape
         input_embeds = self.word_embeddings(input_ids)
         position_embeds = self.position_embeddings(position_ids)
         token_type_embeds = self.token_type_embeddings(token_type_ids)
@@ -231,18 +215,22 @@ class ToxicSentimentClassificationModel(nn.Module):
 
 
 class TSCModel_PL(pl.LightningModule):
-    def __init__(self, cfg, state_dict) -> None:
+    def __init__(self, cfg, state_dict, inverse_class_probabilities) -> None:
         super().__init__()
         self.backbone = MyBertModel(cfg)
         self.backbone.load_state_dict(state_dict)
+        self.backbone = self.backbone.requires_grad_(False)
+
         self.output_layer = OutputLayer(cfg)
-        # ratio of positive to negative samples is 1/27, so add this as loss weights (should be adapted for each class individually)
-        positive_weights = 27 * torch.ones(cfg.num_target_categories)
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=positive_weights)
+        # positive_weights = 27 * torch.ones(cfg.num_target_categories)
+        class_weights = torch.tensor(
+            [inverse_class_probabilities[tag] for tag in cfg.label_tags]
+        )
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights)
+        # self.loss_fn = nn.BCEWithLogitsLoss()
         self.cfg = cfg
         self.automatic_optimization = False
-        self._train_outputs = []
-        self._val_outputs = []
+        self._outputs = {"train": [], "val": []}
 
         metrics = MetricCollection(
             [
@@ -252,15 +240,19 @@ class TSCModel_PL(pl.LightningModule):
                 MultilabelRecall(num_labels=6, average=None),
             ]
         )
-        self.train_metrics = metrics.clone(prefix="train_")
-        self.val_metrics = metrics.clone(prefix="val_")
-        self.train_roc = MultilabelROC(num_labels=6)
-        self.val_roc = MultilabelROC(num_labels=6)
-        self.train_confusion_matrix = MultilabelConfusionMatrix(num_labels=6)
-        self.val_confusion_matrix = MultilabelConfusionMatrix(num_labels=6)
 
-        self.mean_train_loss = MeanMetric()
-        self.mean_val_loss = MeanMetric()
+        self.metrics = {
+            "train_mean_loss": MeanMetric(),
+            # "train_metrics": metrics.clone(prefix="train_"),
+            "train_metrics": metrics.clone(),
+            "train_roc": MultilabelROC(num_labels=6),
+            "train_confusion_matrix": MultilabelConfusionMatrix(num_labels=6),
+            "val_mean_loss": MeanMetric(),
+            # "val_metrics": metrics.clone(prefix="val_"),
+            "val_metrics": metrics.clone(),
+            "val_roc": MultilabelROC(num_labels=6),
+            "val_confusion_matrix": MultilabelConfusionMatrix(num_labels=6),
+        }
 
     def forward(
         self,
@@ -279,13 +271,12 @@ class TSCModel_PL(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         opt = self.optimizers()
         input_ids, token_type_ids, labels = batch
-        seq_len = input_ids.shape[2]
-        batchsize = input_ids.shape[1]
+        batchsize, seq_len = input_ids.shape
         position_ids = torch.stack(
             [torch.arange(0, seq_len, dtype=torch.long, device=self.device)] * batchsize
         )
-        logits = self(input_ids[0], token_type_ids[0], position_ids=position_ids)
-        loss_val = self.loss_fn(logits, labels[0])
+        logits = self(input_ids, token_type_ids, position_ids=position_ids)
+        loss_val = self.loss_fn(logits, labels)
         loss_val.backward()
 
         # accumulate gradients of multiple batches
@@ -293,115 +284,105 @@ class TSCModel_PL(pl.LightningModule):
             opt.step()
             opt.zero_grad()
 
-        self.mean_train_loss.update(loss_val.item())
-        self.train_metrics.update(logits, labels[0].int())
-        self.train_confusion_matrix.update(logits, labels[0].int())
-        self.log(
-            "train_loss",
-            self.mean_train_loss.compute(),
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-        )
-        self.log(
-            "train_accuracy",
-            self.train_metrics.compute()["train_MultilabelAccuracy"].mean(),
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-        )
+        logits_cloned = logits.clone().detach()
+        labels_cloned = labels.clone().detach()
 
-        self._train_outputs.append((logits, labels[0].int()))
+        self._outputs["train"].append((logits_cloned, labels_cloned))
+        self.log_on_step(logits_cloned, labels_cloned, tag="train")
+        if (batch_idx + 1) % self.cfg.log_interval == 0:
+            self.log_on_interval(tag="train")
 
     def training_epoch_end(self, outputs):
-
-        train_dict = self.train_metrics.compute()
-        auroc = train_dict["train_MultilabelAUROC"]
-        cm = self.train_confusion_matrix.compute()
-
-        logits = [o[0] for o in self._train_outputs]
-        labels = [o[1] for o in self._train_outputs]
-        logits = torch.cat(logits, dim=0)
-        labels = torch.cat(labels, dim=0)
-        fpr, tpr, thresholds = self.train_roc(logits, labels)
-
-        tensorboard = self.logger.experiment
-        utils.log_roc_curve(
-            fpr,
-            tpr,
-            tensorboard,
-            self.current_epoch,
-            tag="train",
-            auroc=auroc,
-        )
-        utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag="train")
-        utils.log_metrics_table(
-            train_dict, tensorboard, self.current_epoch, tag="train"
-        )
-        self.train_metrics.reset()
-        self.mean_train_loss.reset()
-        self.train_roc.reset()
-        self.train_confusion_matrix.reset()
-        self._train_outputs = []
+        self._epoch_end(tag="train")
 
     def validation_step(self, batch, batch_idx):
-        input_ids, token_type_ids, labels = batch
-        seq_len = input_ids.shape[2]
-        position_ids = torch.stack(
-            [torch.arange(0, seq_len, dtype=torch.long, device=self.device)]
-            * self.cfg.batchsize
-        )
-        logits = self(input_ids[0], token_type_ids[0], position_ids)
-        loss_val = self.loss_fn(logits, labels[0])
+        with torch.no_grad():
+            input_ids, token_type_ids, labels = batch
+            _, seq_len = input_ids.shape
+            position_ids = torch.stack(
+                [torch.arange(0, seq_len, dtype=torch.long, device=self.device)]
+                * self.cfg.batchsize
+            )
+            logits = self(input_ids, token_type_ids, position_ids)
 
-        self.mean_val_loss.update(loss_val.item())
-        self.val_metrics.update(logits, labels[0].int())
-        self.val_confusion_matrix.update(logits, labels[0].int())
-        self.log(
-            "val_loss",
-            self.mean_val_loss.compute(),
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-        )
-        self.log(
-            "val_accuracy",
-            self.val_metrics.compute()["val_MultilabelAccuracy"].mean(),
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-        )
-
-        if (batch_idx + 1) % 5 == 0:
-            pass
-
-        self._val_outputs.append((logits, labels[0].int()))
-        return logits, labels[0].int()
+            self._outputs["val"].append((logits, labels))
+            self.log_on_step(logits, labels, tag="val")
+            if (batch_idx + 1) % self.cfg.log_interval == 0:
+                self.log_on_interval(tag="train")
+        return logits, labels
 
     def validation_epoch_end(self, outputs):
+        self._epoch_end(tag="val")
 
-        val_dict = self.val_metrics.compute()
-        auroc = val_dict["val_MultilabelAUROC"]
-        cm = self.val_confusion_matrix.compute()
+    def log_on_interval(self, tag):
+        logits = torch.cat([o[0] for o in self._outputs[tag]])
+        labels = torch.cat([o[1] for o in self._outputs[tag]])
+        self.metrics[tag + "_metrics"].update(logits, labels.int())
+        self.log(
+            f"{tag}_loss",
+            self.metrics[tag + "_mean_loss"].compute(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        self.log(
+            f"{tag}_accuracy",
+            self.metrics[tag + "_metrics"].compute()["MultilabelAccuracy"].mean(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        self.log(
+            f"{tag}_precision",
+            self.metrics[tag + "_metrics"].compute()["MultilabelPrecision"].mean(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        self.log(
+            f"{tag}_recall",
+            self.metrics[tag + "_metrics"].compute()["MultilabelRecall"].mean(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+        self.metrics[tag + "_metrics"].reset()
 
-        logits = [o[0] for o in self._val_outputs]
-        labels = [o[1] for o in self._val_outputs]
-        logits = torch.cat(logits, dim=0)
-        labels = torch.cat(labels, dim=0)
-        fpr, tpr, thresholds = self.val_roc(logits, labels)
+    def log_on_step(self, logits, labels, tag="train"):
+        self.metrics[tag + "_mean_loss"].update(self.loss_fn(logits, labels).item())
+        self.log(
+            f"{tag}_loss",
+            self.metrics[tag + "_mean_loss"].compute(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+        )
+
+    def _epoch_end(self, tag="train"):
+
+        logits = torch.cat([o[0] for o in self._outputs[tag]])
+        labels = torch.cat([o[1] for o in self._outputs[tag]])
+        self.metrics[tag + "_metrics"].update(logits, labels.int())
+        metric_dict = self.metrics[tag + "_metrics"].compute()
+        auroc = metric_dict["MultilabelAUROC"]
+        self.metrics[tag + "_confusion_matrix"].update(logits, labels.int())
+        cm = self.metrics[tag + "_confusion_matrix"].compute()
+        self.metrics[tag + "_roc"].update(logits, labels.int())
+        fpr, tpr, thresholds = self.metrics[tag + "_roc"].compute()
+
         tensorboard = self.logger.experiment
         utils.log_roc_curve(
             fpr,
             tpr,
             tensorboard,
             self.current_epoch,
-            tag="val",
+            tag=tag,
             auroc=auroc,
         )
-        utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag="val")
-        utils.log_metrics_table(val_dict, tensorboard, self.current_epoch, tag="val")
-        self.val_metrics.reset()
-        self.mean_val_loss.reset()
-        self.val_roc.reset()
-        self.val_confusion_matrix.reset()
-        self._val_outputs = []
+        utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag=tag)
+        utils.log_metrics_table(metric_dict, tensorboard, self.current_epoch, tag=tag)
+        self.metrics[tag + "_metrics"].reset()
+        self.metrics[tag + "_confusion_matrix"].reset()
+        self.metrics[tag + "_roc"].reset()
+        self.metrics[tag + "_mean_loss"].reset()
+        self._outputs[tag] = []

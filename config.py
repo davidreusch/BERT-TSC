@@ -1,5 +1,5 @@
-cfg = {
-    "num_epochs": 20,
+config_dict = {
+    "num_epochs": 6,
     "lr": 5e-5,
     "num_encoder_blocks": 12,
     "num_attention_heads": 12,
@@ -10,7 +10,7 @@ cfg = {
     "batchsize": 3,
     "num_target_categories": 6,
     "log_interval": 100,
-    "opt_step_interval": 350,
+    "opt_step_interval": 10,
     "label_tags": [
         "toxic",
         "severe_toxic",

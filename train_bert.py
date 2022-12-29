@@ -1,21 +1,22 @@
-import matplotlib.pyplot as plt
 import os
-import typing
 import random
+import typing
 from argparse import Namespace
+from pprint import pprint
+
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
+from IPython.display import HTML, Latex, Markdown, display
+from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, roc_auc_score
 from torch.optim import AdamW
-import pandas as pd
-from IPython.display import display, Markdown, Latex, HTML
-from transformers import BertTokenizer, BertModel, BatchEncoding
-from transformers import get_scheduler
 from tqdm.auto import tqdm
-from pprint import pprint
-from config import cfg
+from transformers import BatchEncoding, BertModel, BertTokenizer, get_scheduler
+
+from config import config_dict
 from model_bert import ToxicSentimentClassificationModel
-from sklearn.metrics import roc_auc_score, RocCurveDisplay, ConfusionMatrixDisplay
 
 
 def load_data() -> typing.Tuple[pd.DataFrame, pd.DataFrame]:
@@ -81,7 +82,7 @@ def make_tokenized_batches(
         token_dict = tokenizer(
             sentences, return_tensors="pt", padding="longest", truncation=True
         )
-        labels = ds_batch[cfg.label_tags].to_numpy(dtype=int)
+        labels = ds_batch[config_dict.label_tags].to_numpy(dtype=int)
         token_dict["labels"] = torch.tensor(labels, dtype=torch.float)
         batches.append(token_dict)
     torch.save(batches, f"Data/{tag}_batches_bs{batch_size}.pt")
@@ -114,12 +115,12 @@ def get_roc(labels: np.ndarray, pred_probs: np.ndarray, tag=""):
             ConfusionMatrixDisplay.from_predictions(
                 labels[:, label].astype(int), (pred_probs[:, label] > 0.5)
             )
-            plt.savefig(f"plots/confusion_matrix_{tag}_{cfg.label_tags[label]}.png")
+            plt.savefig(f"plots/confusion_matrix_{tag}_{config_dict.label_tags[label]}.png")
             plt.cla()
             RocCurveDisplay.from_predictions(
                 labels[:, label].astype(int), pred_probs[:, label]
             )
-            plt.savefig(f"plots/roc_curve_{tag}_{cfg.label_tags[label]}.png")
+            plt.savefig(f"plots/roc_curve_{tag}_{config_dict.label_tags[label]}.png")
             plt.cla()
             plt.close()
 
@@ -130,7 +131,7 @@ def get_roc(labels: np.ndarray, pred_probs: np.ndarray, tag=""):
 
 def analyse_data(dataset: pd.DataFrame):
 
-    labels = dataset[cfg.label_tags].to_numpy(dtype=float)
+    labels = dataset[config_dict.label_tags].to_numpy(dtype=float)
     print(labels)
     print(labels.shape)
     a = labels.sum(axis=-1) / 6
@@ -151,7 +152,7 @@ def validate(
     verbose: bool = False,
 ):
     model.eval()
-    positive_weights = 27 * torch.ones(cfg.num_target_categories, device=device)
+    positive_weights = 27 * torch.ones(config_dict.num_target_categories, device=device)
     loss_fn = nn.BCEWithLogitsLoss(positive_weights)
     loss_sum = 0
     acc_sum = 0
@@ -167,9 +168,7 @@ def validate(
             pred_probs.append(pred_prob)
             acc_sum += get_accuracy(pred_prob, labels.detach().cpu(), verbose=verbose)
         pred_probs = np.concatenate(pred_probs, axis=0)
-        val_labels = (
-            torch.cat([batch["labels"] for batch in batches]).detach().cpu().numpy()
-        )
+        val_labels = torch.cat([batch["labels"] for batch in batches]).detach().cpu().numpy()
     return (
         loss_sum / len(batches),
         acc_sum / len(batches),
@@ -207,8 +206,7 @@ def train(
             token_type_ids = batch["token_type_ids"].to(device)
             seq_len = input_ids.shape[1]
             position_ids = torch.stack(
-                [torch.arange(0, seq_len, dtype=torch.long, device=cfg.device)]
-                * cfg.batchsize
+                [torch.arange(0, seq_len, dtype=torch.long, device=cfg.device)] * cfg.batchsize
             )
             logits = model(input_ids, token_type_ids, position_ids)
             labels = batch["labels"].to(device)
@@ -239,10 +237,10 @@ def train(
 
 
 if __name__ == "__main__":
-    cfg = Namespace(**cfg)
+    config_dict = Namespace(**config_dict)
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(device)
-    cfg.device = device
+    config_dict.device = device
 
     train_val_set, test_set = load_data()
     # analyse_data(train_val_set)
@@ -253,16 +251,16 @@ if __name__ == "__main__":
 
     tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
     train_batches = make_tokenized_batches(
-        train_set, tokenizer, cfg.batchsize, tag="train"
+        train_set, tokenizer, config_dict.batchsize, tag="train"
     )
-    val_batches = make_tokenized_batches(val_set, tokenizer, cfg.batchsize, tag="val")
+    val_batches = make_tokenized_batches(val_set, tokenizer, config_dict.batchsize, tag="val")
     train_batches = train_batches[:100]
     val_batches = val_batches[:100]
     # print(train_batches[0])
 
     pretrained_model = BertModel.from_pretrained("bert-base-cased")
     pretrained_state_dict = pretrained_model.state_dict()
-    model = ToxicSentimentClassificationModel(cfg, pretrained_state_dict)
+    model = ToxicSentimentClassificationModel(config_dict, pretrained_state_dict)
     model.to(device)
     print(model)
 
@@ -270,4 +268,4 @@ if __name__ == "__main__":
 
     sys.exit(1)
 
-    train(model, train_batches, val_batches, device, cfg, "log.txt")
+    train(model, train_batches, val_batches, device, config_dict, "log.txt")
