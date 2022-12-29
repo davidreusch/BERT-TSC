@@ -3,6 +3,7 @@ Data/
 lightning_logs/
 plots/
 .vscode
+pml_08*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
