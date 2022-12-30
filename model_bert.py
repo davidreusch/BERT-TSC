@@ -55,7 +55,7 @@ class BertSelfOutput(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
         self.dense = nn.Linear(cfg.d_model, cfg.d_model)
-        self.LayerNorm = nn.LayerNorm((cfg.d_model,), eps=1e-12, elementwise_affine=True)
+        self.LayerNorm = nn.LayerNorm(cfg.d_model, eps=1e-12, elementwise_affine=True)
         self.dropout = nn.Dropout(cfg.p_dropout)
 
     def forward(self, attention_output):
@@ -89,7 +89,7 @@ class BertOutput(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
         self.dense = nn.Linear(cfg.d_model * 4, cfg.d_model)
-        self.LayerNorm = nn.LayerNorm((cfg.d_model,), eps=1e-12, elementwise_affine=True)
+        self.LayerNorm = nn.LayerNorm(cfg.d_model, eps=1e-12, elementwise_affine=True)
         self.dropout = nn.Dropout(cfg.p_dropout)
 
     def forward(self, seq):
@@ -132,7 +132,7 @@ class BertEmbeddings(nn.Module):
         self.token_type_embeddings = nn.Embedding(
             2, cfg.d_model
         )  # only beginning of sentence token and other tokens
-        self.LayerNorm = nn.LayerNorm((cfg.d_model,), eps=1e-12, elementwise_affine=True)
+        self.LayerNorm = nn.LayerNorm(cfg.d_model, eps=1e-12, elementwise_affine=True)
         self.dropout = nn.Dropout(cfg.p_dropout)
         self.register_buffer("position_ids", torch.arange(cfg.max_seq_len).expand((1, -1)))
 
@@ -241,18 +241,15 @@ class TSCModel_PL(pl.LightningModule):
             ]
         )
 
-        self.metrics = {
-            "train_mean_loss": MeanMetric(),
-            # "train_metrics": metrics.clone(prefix="train_"),
-            "train_metrics": metrics.clone(),
-            "train_roc": MultilabelROC(num_labels=6),
-            "train_confusion_matrix": MultilabelConfusionMatrix(num_labels=6),
-            "val_mean_loss": MeanMetric(),
-            # "val_metrics": metrics.clone(prefix="val_"),
-            "val_metrics": metrics.clone(),
-            "val_roc": MultilabelROC(num_labels=6),
-            "val_confusion_matrix": MultilabelConfusionMatrix(num_labels=6),
-        }
+        self.train_mean_loss = MeanMetric()
+        self.train_metrics = metrics.clone()
+        self.train_roc = MultilabelROC(num_labels=6)
+        self.train_confusion_matrix = MultilabelConfusionMatrix(num_labels=6)
+        self.val_mean_loss = MeanMetric()
+        self.val_metrics = metrics.clone()
+        self.val_roc = MultilabelROC(num_labels=6)
+        self.val_confusion_matrix = MultilabelConfusionMatrix(num_labels=6)
+        self.vars = dict(self.__dict__["_modules"])
 
     def forward(
         self,
@@ -281,8 +278,8 @@ class TSCModel_PL(pl.LightningModule):
 
         # accumulate gradients of multiple batches
         if (batch_idx + 1) % self.cfg.opt_step_interval == 0:
-            opt.step()
-            opt.zero_grad()
+            opt.step()  # type: ignore
+            opt.zero_grad()  # type: ignore
 
         logits_cloned = logits.clone().detach()
         labels_cloned = labels.clone().detach()
@@ -317,42 +314,42 @@ class TSCModel_PL(pl.LightningModule):
     def log_on_interval(self, tag):
         logits = torch.cat([o[0] for o in self._outputs[tag]])
         labels = torch.cat([o[1] for o in self._outputs[tag]])
-        self.metrics[tag + "_metrics"].update(logits, labels.int())
+        self.vars[tag + "_metrics"].update(logits, labels.int())
         self.log(
             f"{tag}_loss",
-            self.metrics[tag + "_mean_loss"].compute(),
+            self.vars[tag + "_mean_loss"].compute(),
             on_step=True,
             on_epoch=True,
             prog_bar=True,
         )
         self.log(
             f"{tag}_accuracy",
-            self.metrics[tag + "_metrics"].compute()["MultilabelAccuracy"].mean(),
+            self.vars[tag + "_metrics"].compute()["MultilabelAccuracy"].mean(),
             on_step=True,
             on_epoch=True,
             prog_bar=True,
         )
         self.log(
             f"{tag}_precision",
-            self.metrics[tag + "_metrics"].compute()["MultilabelPrecision"].mean(),
+            self.vars[tag + "_metrics"].compute()["MultilabelPrecision"].mean(),
             on_step=True,
             on_epoch=True,
             prog_bar=True,
         )
         self.log(
             f"{tag}_recall",
-            self.metrics[tag + "_metrics"].compute()["MultilabelRecall"].mean(),
+            self.vars[tag + "_metrics"].compute()["MultilabelRecall"].mean(),
             on_step=True,
             on_epoch=True,
             prog_bar=True,
         )
-        self.metrics[tag + "_metrics"].reset()
+        self.vars[tag + "_metrics"].reset()
 
     def log_on_step(self, logits, labels, tag="train"):
-        self.metrics[tag + "_mean_loss"].update(self.loss_fn(logits, labels).item())
+        self.vars[tag + "_mean_loss"].update(self.loss_fn(logits, labels).item())
         self.log(
             f"{tag}_loss",
-            self.metrics[tag + "_mean_loss"].compute(),
+            self.vars[tag + "_mean_loss"].compute(),
             on_step=True,
             on_epoch=True,
             prog_bar=True,
@@ -362,15 +359,15 @@ class TSCModel_PL(pl.LightningModule):
 
         logits = torch.cat([o[0] for o in self._outputs[tag]])
         labels = torch.cat([o[1] for o in self._outputs[tag]])
-        self.metrics[tag + "_metrics"].update(logits, labels.int())
-        metric_dict = self.metrics[tag + "_metrics"].compute()
+        self.vars[tag + "_metrics"].update(logits, labels.int())
+        metric_dict = self.vars[tag + "_metrics"].compute()
         auroc = metric_dict["MultilabelAUROC"]
-        self.metrics[tag + "_confusion_matrix"].update(logits, labels.int())
-        cm = self.metrics[tag + "_confusion_matrix"].compute()
-        self.metrics[tag + "_roc"].update(logits, labels.int())
-        fpr, tpr, thresholds = self.metrics[tag + "_roc"].compute()
+        self.vars[tag + "_confusion_matrix"].update(logits, labels.int())
+        cm = self.vars[tag + "_confusion_matrix"].compute()
+        self.vars[tag + "_roc"].update(logits, labels.int())
+        fpr, tpr, thresholds = self.vars[tag + "_roc"].compute()
 
-        tensorboard = self.logger.experiment
+        tensorboard = self.logger.experiment  # type: ignore
         utils.log_roc_curve(
             fpr,
             tpr,
@@ -381,8 +378,8 @@ class TSCModel_PL(pl.LightningModule):
         )
         utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag=tag)
         utils.log_metrics_table(metric_dict, tensorboard, self.current_epoch, tag=tag)
-        self.metrics[tag + "_metrics"].reset()
-        self.metrics[tag + "_confusion_matrix"].reset()
-        self.metrics[tag + "_roc"].reset()
-        self.metrics[tag + "_mean_loss"].reset()
+        self.vars[tag + "_metrics"].reset()
+        self.vars[tag + "_confusion_matrix"].reset()
+        self.vars[tag + "_roc"].reset()
+        self.vars[tag + "_mean_loss"].reset()
         self._outputs[tag] = []
