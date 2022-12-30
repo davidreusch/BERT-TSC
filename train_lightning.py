@@ -126,12 +126,12 @@ def load_data(
             train_batches = train_batches[:data_amount]
             test_batches = test_batches[:data_amount]
         train_loader = DataLoader(
-            DatasetAdapter(train_batches), batch_size=None, num_workers=12, shuffle=True
+            DatasetAdapter(train_batches), batch_size=None, num_workers=2, shuffle=True
         )
         test_loader = DataLoader(
             DatasetAdapter(test_batches),
             batch_size=None,
-            num_workers=12,
+            num_workers=2,
         )
     else:
         train_loader = DataLoader(
