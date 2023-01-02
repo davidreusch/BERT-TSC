@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+# fmt: off
 # $ -N pml_08_bert1 # name of the experiment
 # $ -l cuda=1 # remove this line when no GPU is needed!
 # $ -q all.q # do not fill the qlogin queue
 # $ -cwd # start processes in current directory
 # $ -V   # provide environment variables
+# fmt: on
 
 
 import sys
@@ -125,13 +127,10 @@ def load_data(
         if data_amount > 0:
             train_batches = train_batches[:data_amount]
             test_batches = test_batches[:data_amount]
-        train_loader = DataLoader(
-            DatasetAdapter(train_batches), batch_size=None, num_workers=2, shuffle=True
-        )
+        train_loader = DataLoader(DatasetAdapter(train_batches), batch_size=None, shuffle=True)
         test_loader = DataLoader(
             DatasetAdapter(test_batches),
             batch_size=None,
-            num_workers=2,
         )
     else:
         train_loader = DataLoader(

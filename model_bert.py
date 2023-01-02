@@ -1,6 +1,9 @@
+import matplotlib.pyplot as plt
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+from sklearn.metrics import ConfusionMatrixDisplay, RocCurveDisplay, roc_auc_score
 from torch.optim import AdamW
 from torchmetrics import MeanMetric, MetricCollection
 from torchmetrics.classification import (
@@ -222,7 +225,6 @@ class TSCModel_PL(pl.LightningModule):
         self.backbone = self.backbone.requires_grad_(False)
 
         self.output_layer = OutputLayer(cfg)
-        # positive_weights = 27 * torch.ones(cfg.num_target_categories)
         class_weights = torch.tensor(
             [inverse_class_probabilities[tag] for tag in cfg.label_tags]
         )
@@ -378,8 +380,56 @@ class TSCModel_PL(pl.LightningModule):
         )
         utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag=tag)
         utils.log_metrics_table(metric_dict, tensorboard, self.current_epoch, tag=tag)
+        self.log_roc_and_confusion_matrix_sklearn(
+            tensorboard, logits.numpy(), labels.numpy(), tag=tag
+        )
         self.vars[tag + "_metrics"].reset()
         self.vars[tag + "_confusion_matrix"].reset()
         self.vars[tag + "_roc"].reset()
         self.vars[tag + "_mean_loss"].reset()
         self._outputs[tag] = []
+
+    def log_roc_and_confusion_matrix_sklearn(
+        self, tensorboard, pred_probs: np.ndarray, labels: np.ndarray, tag=""
+    ):
+        def sigmoid(x):
+            return 1 / (1 + np.exp(-x))
+
+        non_zero_cols = labels.sum(axis=0) > 0
+        non_zero_labels = non_zero_cols.nonzero()[0]
+        if len(non_zero_labels) == 0:
+            print(f"WARNING: no nonzero labels for {tag}, cannot compute roc")
+            return
+        roc_auc = roc_auc_score(
+            labels[:, non_zero_cols], pred_probs[:, non_zero_cols], average=None
+        )
+        print("ROC for labels:\n", non_zero_labels.tolist())
+        print(roc_auc)
+
+        for l in non_zero_labels:
+            label = self.cfg.label_tags[l]
+            fig = ConfusionMatrixDisplay.from_predictions(
+                labels[:, l].astype(int), (sigmoid(pred_probs[:, l]) > 0.5)
+            ).figure_
+            tensorboard.add_figure(
+                f"confusion_matrix_sklearn_{tag}/{label}",
+                fig,
+                global_step=self.current_epoch,
+                walltime=None,
+            )
+            # plt.savefig(f"plots/confusion_matrix_{tag}_{self.cfg.label_tags[label]}.png")
+            # plt.cla()
+            fig = RocCurveDisplay.from_predictions(
+                labels[:, l].astype(int), pred_probs[:, l]
+            ).figure_
+            tensorboard.add_figure(
+                f"roc_curve_sklearn_{tag}/{label}",
+                fig,
+                global_step=self.current_epoch,
+                walltime=None,
+            )
+            # plt.savefig(f"plots/roc_curve_{tag}_{self.cfg.label_tags[label]}.png")
+            # plt.cla()
+            # plt.close()
+
+        return sum(roc_auc) / len(roc_auc)
