@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
@@ -14,6 +16,7 @@ from torchmetrics.classification import (
     MultilabelRecall,
     MultilabelROC,
 )
+from transformers import get_linear_schedule_with_warmup
 
 import utils
 
@@ -182,19 +185,21 @@ class MyBertModel(nn.Module):
 class OutputLayer(nn.Module):
     def __init__(self, cfg) -> None:
         super().__init__()
-        self.dense1 = nn.Linear(cfg.d_model, cfg.d_model // 2)
-        self.act_fn = nn.GELU()
-        self.dense2 = nn.Linear(cfg.d_model // 2, cfg.num_target_categories)
-        self.dropout = nn.Dropout(cfg.p_dropout)
+        self.linear = nn.Linear(cfg.d_model, cfg.num_target_categories)
+        # self.dense1 = nn.Linear(cfg.d_model, cfg.d_model // 2)
+        # self.act_fn = nn.GELU()
+        # self.dense2 = nn.Linear(cfg.d_model // 2, cfg.num_target_categories)
+        # self.dropout = nn.Dropout(cfg.p_dropout)
 
     def forward(self, encoder_output: torch.Tensor):
         # encoder_output.shape: (batchsize, seq_len, d_model)
-        x = self.dense1(
-            encoder_output[:, 0]
-        )  # use only hidden state corresponding to start of sequence token for classification
-        x = self.act_fn(x)
-        x = self.dropout(x)
-        x = self.dense2(x)
+        x = self.linear(encoder_output[:, 0])
+        # x = self.dense1(
+        # encoder_output[:, 0]
+        # )  # use only hidden state corresponding to start of sequence token for classification
+        # x = self.act_fn(x)
+        # x = self.dropout(x)
+        # x = self.dense2(x)
         return x
 
 
@@ -259,16 +264,38 @@ class TSCModel_PL(pl.LightningModule):
         token_type_ids: torch.Tensor,
         position_ids: torch.Tensor,
         **kwargs,
-    ):
+    ) -> torch.Tensor:
         backbone_output = self.backbone(input_ids, token_type_ids, position_ids)
         return self.output_layer(backbone_output)
 
     def configure_optimizers(self):
-        optimizer = AdamW(self.parameters(), lr=5e-5)
-        return optimizer
+        no_decay = ["bias", "LayerNorm.weight"]
+        params_with_weight_decay = [
+            {
+                "params": [
+                    p
+                    for n, p in self.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.01,
+            },
+            {
+                "params": [
+                    p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer = AdamW(params_with_weight_decay, lr=self.cfg.lr)
+        warmup_steps = 1000
+        total_steps = self.global_step - warmup_steps
+        print(f"{self.global_step=}")
+        scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+        return [optimizer], [scheduler]
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx):
         opt = self.optimizers()
+        scheduler = self.lr_schedulers()
         input_ids, token_type_ids, labels = batch
         batchsize, seq_len = input_ids.shape
         position_ids = torch.stack(
@@ -281,11 +308,11 @@ class TSCModel_PL(pl.LightningModule):
         # accumulate gradients of multiple batches
         if (batch_idx + 1) % self.cfg.opt_step_interval == 0:
             opt.step()  # type: ignore
+            scheduler.step()  # type: ignore
             opt.zero_grad()  # type: ignore
 
         logits_cloned = logits.clone().detach()
         labels_cloned = labels.clone().detach()
-
         self._outputs["train"].append((logits_cloned, labels_cloned))
         self.log_on_step(logits_cloned, labels_cloned, tag="train")
         if (batch_idx + 1) % self.cfg.log_interval == 0:
@@ -306,8 +333,6 @@ class TSCModel_PL(pl.LightningModule):
 
             self._outputs["val"].append((logits, labels))
             self.log_on_step(logits, labels, tag="val")
-            if (batch_idx + 1) % self.cfg.log_interval == 0:
-                self.log_on_interval(tag="train")
         return logits, labels
 
     def validation_epoch_end(self, outputs):
@@ -317,13 +342,6 @@ class TSCModel_PL(pl.LightningModule):
         logits = torch.cat([o[0] for o in self._outputs[tag]])
         labels = torch.cat([o[1] for o in self._outputs[tag]])
         self.vars[tag + "_metrics"].update(logits, labels.int())
-        self.log(
-            f"{tag}_loss",
-            self.vars[tag + "_mean_loss"].compute(),
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-        )
         self.log(
             f"{tag}_accuracy",
             self.vars[tag + "_metrics"].compute()["MultilabelAccuracy"].mean(),
@@ -381,7 +399,7 @@ class TSCModel_PL(pl.LightningModule):
         utils.log_confusion_matrix(cm, tensorboard, self.current_epoch, tag=tag)
         utils.log_metrics_table(metric_dict, tensorboard, self.current_epoch, tag=tag)
         self.log_roc_and_confusion_matrix_sklearn(
-            tensorboard, logits.numpy(), labels.numpy(), tag=tag
+            tensorboard, logits.cpu().numpy(), labels.cpu().numpy(), tag=tag
         )
         self.vars[tag + "_metrics"].reset()
         self.vars[tag + "_confusion_matrix"].reset()

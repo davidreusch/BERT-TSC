@@ -1,6 +1,6 @@
 config_dict = {
     "num_epochs": 6,
-    "lr": 5e-5,
+    "lr": 2e-5,
     "num_encoder_blocks": 12,
     "num_attention_heads": 12,
     "d_model": 768,
@@ -10,7 +10,7 @@ config_dict = {
     "batchsize": 3,
     "num_target_categories": 6,
     "log_interval": 100,
-    "opt_step_interval": 10,
+    "opt_step_interval": 1,
     "label_tags": [
         "toxic",
         "severe_toxic",

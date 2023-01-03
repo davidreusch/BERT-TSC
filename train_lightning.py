@@ -147,7 +147,11 @@ def load_data(
 
 
 def make_tokenized_batches(
-    dataset: pd.DataFrame, tokenizer, batch_size: int, tag: str, recompute: bool = False
+    dataset: pd.DataFrame,
+    tokenizer: BertTokenizer,
+    batch_size: int,
+    tag: str,
+    recompute: bool = False,
 ) -> List[BatchEncoding]:
     """divide the dataset into batches of size batch_size and
     tokenize the batches with the BertTokenizer
@@ -177,7 +181,11 @@ def make_tokenized_batches(
         sentences = ds_batch["comment_text"].to_list()
         # tokenize the batch
         token_dict = tokenizer(
-            sentences, return_tensors="pt", padding="longest", truncation=True
+            sentences,
+            return_tensors="pt",
+            padding="longest",
+            truncation=True,
+            max_length=120,
         )
         # add labels to token_dict
         labels = ds_batch[cfg.label_tags].to_numpy(dtype=int)
