@@ -223,21 +223,24 @@ class ToxicSentimentClassificationModel(nn.Module):
 
 
 class TSCModel_PL(pl.LightningModule):
-    def __init__(self, cfg, state_dict, inverse_class_probabilities) -> None:
+    def __init__(
+        self, cfg, state_dict, inverse_class_probabilities={}, warmup_steps=0, total_steps=0
+    ) -> None:
         super().__init__()
         self.backbone = MyBertModel(cfg)
         self.backbone.load_state_dict(state_dict)
-        self.backbone = self.backbone.requires_grad_(False)
+        # self.backbone = self.backbone.requires_grad_(False)
 
         self.output_layer = OutputLayer(cfg)
         class_weights = torch.tensor(
             [inverse_class_probabilities[tag] for tag in cfg.label_tags]
         )
-        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights)
-        # self.loss_fn = nn.BCEWithLogitsLoss()
+        # self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights)
+        self.loss_fn = nn.BCEWithLogitsLoss()
         self.cfg = cfg
         self.automatic_optimization = False
         self._outputs = {"train": [], "val": []}
+        self.warmup_steps, self.total_steps = warmup_steps, total_steps
 
         metrics = MetricCollection(
             [
@@ -263,7 +266,6 @@ class TSCModel_PL(pl.LightningModule):
         input_ids: torch.Tensor,
         token_type_ids: torch.Tensor,
         position_ids: torch.Tensor,
-        **kwargs,
     ) -> torch.Tensor:
         backbone_output = self.backbone(input_ids, token_type_ids, position_ids)
         return self.output_layer(backbone_output)
@@ -287,13 +289,16 @@ class TSCModel_PL(pl.LightningModule):
             },
         ]
         optimizer = AdamW(params_with_weight_decay, lr=self.cfg.lr)
-        warmup_steps = 1000
-        total_steps = self.global_step - warmup_steps
-        print(f"{self.global_step=}")
-        scheduler = get_linear_schedule_with_warmup(optimizer, warmup_steps, total_steps)
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=self.warmup_steps,
+            num_training_steps=self.total_steps,
+        )
         return [optimizer], [scheduler]
 
-    def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx):
+    def training_step(
+        self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int
+    ):
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
         input_ids, token_type_ids, labels = batch
@@ -321,7 +326,7 @@ class TSCModel_PL(pl.LightningModule):
     def training_epoch_end(self, outputs):
         self._epoch_end(tag="train")
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch: torch.Tensor, batch_idx: int):
         with torch.no_grad():
             input_ids, token_type_ids, labels = batch
             _, seq_len = input_ids.shape
@@ -338,7 +343,7 @@ class TSCModel_PL(pl.LightningModule):
     def validation_epoch_end(self, outputs):
         self._epoch_end(tag="val")
 
-    def log_on_interval(self, tag):
+    def log_on_interval(self, tag: str):
         logits = torch.cat([o[0] for o in self._outputs[tag]])
         labels = torch.cat([o[1] for o in self._outputs[tag]])
         self.vars[tag + "_metrics"].update(logits, labels.int())
@@ -375,7 +380,7 @@ class TSCModel_PL(pl.LightningModule):
             prog_bar=True,
         )
 
-    def _epoch_end(self, tag="train"):
+    def _epoch_end(self, tag: str):
 
         logits = torch.cat([o[0] for o in self._outputs[tag]])
         labels = torch.cat([o[1] for o in self._outputs[tag]])
@@ -386,6 +391,9 @@ class TSCModel_PL(pl.LightningModule):
         cm = self.vars[tag + "_confusion_matrix"].compute()
         self.vars[tag + "_roc"].update(logits, labels.int())
         fpr, tpr, thresholds = self.vars[tag + "_roc"].compute()
+        torch.save((logits, labels), "Data/logits_labels.pt")
+        logits, labels = torch.load("Data/logits_labels.pt")
+        # torch.save(labels, "Data/labels.pt")
 
         tensorboard = self.logger.experiment  # type: ignore
         utils.log_roc_curve(
@@ -408,7 +416,7 @@ class TSCModel_PL(pl.LightningModule):
         self._outputs[tag] = []
 
     def log_roc_and_confusion_matrix_sklearn(
-        self, tensorboard, pred_probs: np.ndarray, labels: np.ndarray, tag=""
+        self, tensorboard, pred_probs: np.ndarray, labels: np.ndarray, tag: str
     ):
         def sigmoid(x):
             return 1 / (1 + np.exp(-x))

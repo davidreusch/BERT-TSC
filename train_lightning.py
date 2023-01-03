@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-# fmt: off
 # $ -N pml_08_bert1 # name of the experiment
 # $ -l cuda=1 # remove this line when no GPU is needed!
 # $ -q all.q # do not fill the qlogin queue
 # $ -cwd # start processes in current directory
 # $ -V   # provide environment variables
-# fmt: on
 
 
 import sys
@@ -231,7 +229,7 @@ class LazyDatasetAdapter(Dataset):
         ds_batch = self.dataset.iloc[i * self.batchsize : (i + 1) * self.batchsize]
         sentences = ds_batch["comment_text"].to_list()
         token_dict = self.tokenizer(
-            sentences, return_tensors="pt", padding="longest", truncation=True
+            sentences, return_tensors="pt", padding="longest", truncation=True, max_length=120
         )
         labels = torch.tensor(ds_batch[cfg.label_tags].to_numpy(dtype=float))
         return (
@@ -276,7 +274,7 @@ def main(recompute, data_amount, num_gpus):
         dataset="jigsaw-TSC",
         transformation=bert_tokenizer,
         batchsize=cfg.batchsize,
-        early_loading=True,
+        early_loading=False,
         recompute=recompute,
         data_amount=data_amount,
     )
@@ -288,8 +286,18 @@ def main(recompute, data_amount, num_gpus):
     pretrained_model = BertModel.from_pretrained("bert-base-cased")
     pretrained_state_dict = pretrained_model.state_dict()
 
+    warmup_steps = 1000
+    total_steps = len(train_loader) * cfg.num_epochs - warmup_steps
+    print(f"{total_steps=}")
+
     # load model with pretrained weights
-    model = TSCModel_PL(cfg, pretrained_state_dict, inverse_class_probabilities)
+    model = TSCModel_PL(
+        cfg,
+        pretrained_state_dict,
+        inverse_class_probabilities,
+        warmup_steps=warmup_steps,
+        total_steps=total_steps,
+    )
 
     # train the model
     trainer = pl.Trainer(gpus=num_gpus, max_epochs=cfg.num_epochs)

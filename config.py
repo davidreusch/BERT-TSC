@@ -1,5 +1,5 @@
 config_dict = {
-    "num_epochs": 6,
+    "num_epochs": 2,
     "lr": 2e-5,
     "num_encoder_blocks": 12,
     "num_attention_heads": 12,
@@ -7,7 +7,7 @@ config_dict = {
     "vocab_size": 28996,
     "max_seq_len": 512,
     "p_dropout": 0.1,
-    "batchsize": 3,
+    "batchsize": 32,
     "num_target_categories": 6,
     "log_interval": 100,
     "opt_step_interval": 1,
