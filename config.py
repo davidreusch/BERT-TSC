@@ -1,6 +1,6 @@
 config_dict = {
     "num_epochs": 2,
-    "lr": 2e-5,
+    "lr": 3e-5,
     "num_encoder_blocks": 12,
     "num_attention_heads": 12,
     "d_model": 768,

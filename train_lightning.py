@@ -106,6 +106,9 @@ def load_data(
     # we could in principle also read the csvs lazy (in chunks), but with a size of ~60MB per csv,
     # we consider this not necessary
     train, test = load_csvs()
+    if data_amount > 0:
+        train = train[:data_amount]
+        test = test[: data_amount // 2]
     inverse_class_probabilities = get_inverse_class_probabilities(train, cfg.label_tags)
     if early_loading:
         train_batches = make_tokenized_batches(
@@ -122,9 +125,6 @@ def load_data(
             tag="test",
             recompute=recompute,
         )
-        if data_amount > 0:
-            train_batches = train_batches[:data_amount]
-            test_batches = test_batches[:data_amount]
         train_loader = DataLoader(DatasetAdapter(train_batches), batch_size=None, shuffle=True)
         test_loader = DataLoader(
             DatasetAdapter(test_batches),
@@ -229,7 +229,11 @@ class LazyDatasetAdapter(Dataset):
         ds_batch = self.dataset.iloc[i * self.batchsize : (i + 1) * self.batchsize]
         sentences = ds_batch["comment_text"].to_list()
         token_dict = self.tokenizer(
-            sentences, return_tensors="pt", padding="longest", truncation=True, max_length=120
+            sentences,
+            return_tensors="pt",
+            padding="longest",
+            truncation=True,
+            max_length=120,
         )
         labels = torch.tensor(ds_batch[cfg.label_tags].to_numpy(dtype=float))
         return (

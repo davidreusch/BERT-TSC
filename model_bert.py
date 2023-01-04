@@ -299,6 +299,7 @@ class TSCModel_PL(pl.LightningModule):
     def training_step(
         self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int
     ):
+        self.train()
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
         input_ids, token_type_ids, labels = batch
@@ -327,12 +328,12 @@ class TSCModel_PL(pl.LightningModule):
         self._epoch_end(tag="train")
 
     def validation_step(self, batch: torch.Tensor, batch_idx: int):
+        self.eval()
         with torch.no_grad():
             input_ids, token_type_ids, labels = batch
-            _, seq_len = input_ids.shape
+            batchsize, seq_len = input_ids.shape
             position_ids = torch.stack(
-                [torch.arange(0, seq_len, dtype=torch.long, device=self.device)]
-                * self.cfg.batchsize
+                [torch.arange(0, seq_len, dtype=torch.long, device=self.device)] * batchsize
             )
             logits = self(input_ids, token_type_ids, position_ids)
 
