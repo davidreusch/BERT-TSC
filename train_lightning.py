@@ -15,22 +15,36 @@ from argparse import Namespace
 from typing import Dict, List, Tuple
 
 import click
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import BatchEncoding, BertModel, BertTokenizer
 
 from config import config_dict
 
 cfg = Namespace(**config_dict)
+import re
+import string
+
 from model_bert import TSCModel_PL
 
 
-def load_csvs() -> Tuple[pd.DataFrame, pd.DataFrame]:
+def clean_text(text):
+    # Remove newlines from messy strings
+    text = re.sub(r"\r+|\n+|\t+", " ", text)
+
+    # Remove special characters
+    text = re.sub(r"(\w+:\/\/\S+)|^rt|http.+?", "", text)
+
+    # Remove more than one white space
+    text = re.sub(" +", " ", text)
+
+    return text
+
+
+def load_csvs(clean=False) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """load train/validation and test data from csv files into pandas dataframes
 
     Returns:
@@ -42,6 +56,14 @@ def load_csvs() -> Tuple[pd.DataFrame, pd.DataFrame]:
     test_labels_pth = data_pth + "test_labels.csv"
     train_val = pd.read_csv(train_pth)
     test = pd.read_csv(test_pth)
+
+    # call clean_text
+    if clean:
+        train_val["comment_text"] = (
+            train_val["comment_text"].apply(str).apply(lambda x: clean_text(x))
+        )
+        test["comment_text"] = test["comment_text"].apply(str).apply(lambda x: clean_text(x))
+        train_val = train_val.drop_duplicates(subset=["comment_text"], keep="first")
 
     test_labels = pd.read_csv(test_labels_pth)
     test_labels = test_labels[test_labels.drop(columns=["id"]).sum(axis=1) >= 0]
