@@ -4,6 +4,10 @@ lightning_logs/
 plots/
 .vscode
 pml_08*
+*.swp
+inference_1.py
+
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
