@@ -26,12 +26,11 @@ from config import config_dict
 
 cfg = Namespace(**config_dict)
 import re
-import string
 
 from model_bert import TSCModel_PL
 
 
-def clean_text(text):
+def clean_text(text: str):
     # Remove newlines from messy strings
     text = re.sub(r"\r+|\n+|\t+", " ", text)
 
@@ -205,7 +204,7 @@ def make_tokenized_batches(
             return_tensors="pt",
             padding="longest",
             truncation=True,
-            max_length=120,
+            max_length=cfg.truncate_seq_len,
         )
         # add labels to token_dict
         labels = ds_batch[cfg.label_tags].to_numpy(dtype=int)
@@ -255,7 +254,7 @@ class LazyDatasetAdapter(Dataset):
             return_tensors="pt",
             padding="longest",
             truncation=True,
-            max_length=120,
+            max_length=cfg.truncate_seq_len,
         )
         labels = torch.tensor(ds_batch[cfg.label_tags].to_numpy(dtype=float))
         return (
@@ -275,7 +274,7 @@ class LazyDatasetAdapter(Dataset):
     "--recompute",
     is_flag=True,
     default=False,
-    help="determines wether to recompute dataset or load it from disk",
+    help="determines whether to recompute dataset or load it from disk",
 )
 @click.option(
     "--data-amount",
@@ -285,36 +284,34 @@ class LazyDatasetAdapter(Dataset):
 @click.option(
     "--num-gpus",
     default=0,
-    help="how many gpus to use",
+    help="how many gpus to use, if zero use available gpu",
 )
 def train_apply(recompute, data_amount, num_gpus):
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    print(device)
+    print("Using", device)
     num_gpus = int(torch.cuda.is_available()) if num_gpus == 0 else num_gpus
 
     # get bert tokenizer
     bert_tokenizer = BertTokenizer.from_pretrained("bert-base-cased")
+
     # load data (only train and test, no validation, because all that matters in the end is performance on test set)
     train_loader, test_loader, inverse_class_probabilities = load_data(
         dataset="jigsaw-TSC",
         transformation=bert_tokenizer,
         batchsize=cfg.batchsize,
-        early_loading=False,
+        early_loading=True,
         recompute=recompute,
         data_amount=data_amount,
     )
-    print(f"{inverse_class_probabilities=}")
-    num_training_steps = cfg.num_epochs * len(train_loader)
-    cfg.num_training_steps = num_training_steps
 
     # get pretrained weights of bert
     pretrained_model = BertModel.from_pretrained("bert-base-cased")
     pretrained_state_dict = pretrained_model.state_dict()
 
+    # get steps for scheduler
     warmup_steps = 1000
     total_steps = len(train_loader) * cfg.num_epochs - warmup_steps
-    print(f"{total_steps=}")
 
     # load model with pretrained weights
     model = TSCModel_PL(
@@ -328,8 +325,9 @@ def train_apply(recompute, data_amount, num_gpus):
     # train the model
     trainer = pl.Trainer(gpus=num_gpus, max_epochs=cfg.num_epochs)
     trainer.fit(model, train_loader, test_loader)
+
+    # get test predictions
     test_predictions = model.get_test_predictions()
-    print(f"{test_predictions.shape=}")
     return test_predictions
 
 
