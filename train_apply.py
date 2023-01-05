@@ -287,7 +287,7 @@ class LazyDatasetAdapter(Dataset):
     default=0,
     help="how many gpus to use",
 )
-def main(recompute, data_amount, num_gpus):
+def train_apply(recompute, data_amount, num_gpus):
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(device)
@@ -328,7 +328,10 @@ def main(recompute, data_amount, num_gpus):
     # train the model
     trainer = pl.Trainer(gpus=num_gpus, max_epochs=cfg.num_epochs)
     trainer.fit(model, train_loader, test_loader)
+    test_predictions = model.get_test_predictions()
+    print(f"{test_predictions.shape=}")
+    return test_predictions
 
 
 if __name__ == "__main__":
-    main()
+    train_apply()

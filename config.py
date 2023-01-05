@@ -7,7 +7,7 @@ config_dict = {
     "vocab_size": 28996,
     "max_seq_len": 512,
     "p_dropout": 0.1,
-    "batchsize": 32,
+    "batchsize": 24,
     "num_target_categories": 6,
     "log_interval": 100,
     "opt_step_interval": 1,

@@ -8,7 +8,7 @@ cfg = Namespace(**config_dict)
 from transformers import BatchEncoding, BertModel, BertTokenizer
 
 from model_bert import TSCModel_PL
-from train_lightning import LazyDatasetAdapter, load_csvs, load_data
+from train_apply import LazyDatasetAdapter, load_csvs, load_data
 
 
 def load_data_for_inference(tokenizer):
