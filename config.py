@@ -8,7 +8,7 @@ config_dict = {
     "max_seq_len": 512,
     "truncate_seq_len": 120,
     "p_dropout": 0.1,
-    "batchsize": 32,
+    "batchsize": 16,
     "num_target_categories": 6,
     "log_interval": 100,
     "opt_step_interval": 1,

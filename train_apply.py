@@ -127,10 +127,10 @@ def load_data(
     # we could in principle also read the csvs lazy (in chunks), but with a size of ~60MB per csv,
     # we consider this not necessary
     train, test = load_csvs()
+    inverse_class_probabilities = get_inverse_class_probabilities(train, cfg.label_tags)
     if data_amount > 0:
         train = train[:data_amount]
         test = test[: data_amount // 2]
-    inverse_class_probabilities = get_inverse_class_probabilities(train, cfg.label_tags)
     if early_loading:
         train_batches = make_tokenized_batches(
             train,
@@ -146,6 +146,9 @@ def load_data(
             tag="test",
             recompute=recompute,
         )
+        if data_amount > 0:
+            train_batches = train_batches[:data_amount]
+            test_batches = test_batches[: data_amount // 2]
         train_loader = DataLoader(DatasetAdapter(train_batches), batch_size=None, shuffle=True)
         test_loader = DataLoader(
             DatasetAdapter(test_batches),
@@ -314,13 +317,9 @@ def train_apply(recompute, data_amount, num_gpus):
     total_steps = len(train_loader) * cfg.num_epochs - warmup_steps
 
     # load model with pretrained weights
-    model = TSCModel_PL(
-        cfg,
-        pretrained_state_dict,
-        inverse_class_probabilities,
-        warmup_steps=warmup_steps,
-        total_steps=total_steps,
-    )
+    model = TSCModel_PL(cfg)
+    model.load_pretrained_weights_backbone(pretrained_state_dict)
+    model.init_train(inverse_class_probabilities, warmup_steps, total_steps)
 
     # train the model
     trainer = pl.Trainer(gpus=num_gpus, max_epochs=cfg.num_epochs)

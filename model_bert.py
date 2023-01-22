@@ -224,24 +224,22 @@ class ToxicSentimentClassificationModel(nn.Module):
 
 
 class TSCModel_PL(pl.LightningModule):
-    def __init__(
-        self, cfg, state_dict, inverse_class_probabilities={}, warmup_steps=0, total_steps=0
-    ) -> None:
+    def __init__(self, cfg) -> None:
         super().__init__()
         self.backbone = MyBertModel(cfg)
-        self.backbone.load_state_dict(state_dict)
-        # to freeze backbone weights
-        # self.backbone = self.backbone.requires_grad_(False)
-
         self.output_layer = OutputLayer(cfg)
-        class_weights = torch.tensor(
-            [inverse_class_probabilities[tag] for tag in cfg.label_tags]
-        )
-        # code for weighting of loss function
-        # class_weights = class_weights / class_weights.sum()
-        # self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights)
-        self.loss_fn = nn.BCEWithLogitsLoss()
         self.cfg = cfg
+
+    def init_train(self, inverse_class_probabilities, warmup_steps, total_steps):
+        # code for weighting of loss function
+        if inverse_class_probabilities:
+            class_weights = torch.tensor(
+                [inverse_class_probabilities[tag] for tag in self.cfg.label_tags],
+                requires_grad=False,
+            )
+        else:
+            class_weights = torch.ones(len(self.cfg.label_tags))
+        self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights)
         self.automatic_optimization = False
         self._outputs = {"train": [], "test": []}
         self.warmup_steps, self.total_steps = warmup_steps, total_steps
@@ -265,6 +263,15 @@ class TSCModel_PL(pl.LightningModule):
         self.test_confusion_matrix = MultilabelConfusionMatrix(num_labels=6)
         self.test_predictions = []
         self.vars = dict(self.__dict__["_modules"])
+        super().train(mode=True)
+
+    def load_pretrained_weights_backbone(self, state_dict):
+        self.backbone.load_state_dict(state_dict)
+        # to freeze backbone weights
+        # self.backbone = self.backbone.requires_grad_(False)
+
+    def load_pretrained_weights_whole_model(self, state_dict):
+        self.load_state_dict(state_dict)
 
     def forward(
         self,
@@ -304,7 +311,6 @@ class TSCModel_PL(pl.LightningModule):
     def training_step(
         self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int
     ):
-        self.train()
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
         input_ids, token_type_ids, labels = batch
@@ -313,8 +319,8 @@ class TSCModel_PL(pl.LightningModule):
             [torch.arange(0, seq_len, dtype=torch.long, device=self.device)] * batchsize
         )
         logits = self(input_ids, token_type_ids, position_ids=position_ids)
-        loss_test = self.loss_fn(logits, labels)
-        loss_test.backward()
+        loss = self.loss_fn(logits, labels) / self.cfg.opt_step_interval
+        loss.backward()
 
         # accumulate gradients of multiple batches
         if (batch_idx + 1) % self.cfg.opt_step_interval == 0:
@@ -333,7 +339,6 @@ class TSCModel_PL(pl.LightningModule):
         self._epoch_end(tag="train")
 
     def validation_step(self, batch: torch.Tensor, batch_idx: int):
-        self.eval()
         with torch.no_grad():
             input_ids, token_type_ids, labels = batch
             batchsize, seq_len = input_ids.shape
