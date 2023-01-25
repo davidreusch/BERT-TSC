@@ -44,8 +44,8 @@ class BertSelfAttention(nn.Module):
 
         #   (batchsize, num_attention_heads, seq_len, d_v) x (batchsize, num_attention_heads, d_v, seq_len)
         # = (batchsize, num_attention_heads, seq_len, seq_len)
-        Z = querys_proj @ keys_proj.transpose(-1, -2) / d_v**0.5
-        p_attention = nn.Softmax(dim=-1)(Z)
+        A = querys_proj @ keys_proj.transpose(-1, -2) / d_v**0.5
+        p_attention = nn.Softmax(dim=-1)(A)
         #   (batchsize, num_attention_heads, seq_len, seq_len) x (batchsize, num_attention_heads, seq_len, d_v)
         # = (batchsize, num_attention_heads, seq_len, d_v)
         attention_output = p_attention @ values_proj
@@ -67,7 +67,7 @@ class BertSelfOutput(nn.Module):
     def forward(self, attention_output: torch.Tensor) -> torch.Tensor:
         # attention_output.shape = (batchsize, seq_len, d_model)
         # in which order to apply these things? see below
-        return self.dropout(self.LayerNorm(self.dense(attention_output))) + attention_output
+        return self.dropout(self.LayerNorm(self.dense(attention_output)))
 
 
 class BertAttention(nn.Module):
@@ -113,10 +113,10 @@ class BertLayer(nn.Module):
         self.output = BertOutput(cfg)
 
     def forward(self, seq: torch.Tensor) -> torch.Tensor:
-        attention_output = self.attention(seq)
+        attention_output = self.attention(seq) + seq
         x = self.intermediate(attention_output)
-        x = self.output(x)
-        return x + attention_output
+        x = self.output(x) + attention_output
+        return x
 
 
 class BertEncoder(nn.Module):
