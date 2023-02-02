@@ -238,7 +238,7 @@ class TSCModel_PL(pl.LightningModule):
                 requires_grad=False,
             )
         else:
-            class_weights = torch.ones(len(self.cfg.label_tags))
+            class_weights = torch.ones(len(self.cfg.label_tags), requires_grad=False)
         self.loss_fn = nn.BCEWithLogitsLoss(pos_weight=class_weights)
         self.automatic_optimization = False
         self._outputs = {"train": [], "test": []}
@@ -271,6 +271,8 @@ class TSCModel_PL(pl.LightningModule):
         # self.backbone = self.backbone.requires_grad_(False)
 
     def load_pretrained_weights_whole_model(self, state_dict):
+        if "loss_fn.pos_weight" in state_dict:
+            del state_dict["loss_fn.pos_weight"]
         self.load_state_dict(state_dict)
 
     def forward(
@@ -349,6 +351,8 @@ class TSCModel_PL(pl.LightningModule):
 
             self._outputs["test"].append((logits, labels))
             self.log_on_step(logits, labels, tag="test")
+            if (batch_idx + 1) % self.cfg.log_interval == 0:
+                self.log_on_interval(tag="test")
         return logits, labels
 
     def validation_epoch_end(self, outputs):

@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 import torch
+from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader, Dataset
 from transformers import BatchEncoding, BertModel, BertTokenizer
 
@@ -104,6 +105,9 @@ def get_inverse_class_probabilities(
     Returns:
         typing.Dict[str, float]: inverse class probabilities
     """
+    inverse_probs = np.array([1 / dataset[tag].mean() for tag in label_tags])
+    inverse_probs = inverse_probs / inverse_probs.max
+
     return {tag: 1 / dataset[tag].mean() for tag in label_tags}
 
 
@@ -322,7 +326,10 @@ def train_apply(recompute, data_amount, num_gpus):
     model.init_train(inverse_class_probabilities, warmup_steps, total_steps)
 
     # train the model
-    trainer = pl.Trainer(gpus=num_gpus, max_epochs=cfg.num_epochs)
+    checkpoint_callback = ModelCheckpoint(every_n_epochs=1, save_top_k=-1)
+    trainer = pl.Trainer(
+        gpus=num_gpus, max_epochs=cfg.num_epochs, callbacks=[checkpoint_callback]
+    )
     trainer.fit(model, train_loader, test_loader)
 
     # get test predictions
